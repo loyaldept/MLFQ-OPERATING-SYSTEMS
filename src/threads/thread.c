@@ -24,6 +24,14 @@
    that are ready to run but not actually running. */
 static struct list ready_list;
 
+/* ========================================================================== */
+/* ADDED FOR LAB 4: Array of 20 MLFQ priority queues                          */
+/* Each queue holds threads at that priority level (queue 0 = lowest priority,*/
+/* queue 19 = highest priority). We pick threads from highest queue first.   */
+/* ========================================================================== */
+static struct list mlfq_queues[MLFQ_NUM_QUEUES];
+/* ========================================================================== */
+
 /* List of all processes.  Processes are added to this list
    when they are first scheduled and removed when they exit. */
 static struct list all_list;
@@ -54,6 +62,14 @@ static long long user_ticks;    /* # of timer ticks in user programs. */
 #define TIME_SLICE 4            /* # of timer ticks to give each thread. */
 static unsigned thread_ticks;   /* # of timer ticks since last yield. */
 
+/* ========================================================================== */
+/* ADDED FOR LAB 4: Counter for priority boosting                             */
+/* Tracks how many ticks since we last boosted all threads to highest priority*/
+/* When this reaches 50, we boost everyone to prevent starvation.            */
+/* ========================================================================== */
+static int64_t ticks_since_boost = 0;
+/* ========================================================================== */
+
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
    Controlled by kernel command-line option "-o mlfqs". */
@@ -71,6 +87,13 @@ static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
+/* ========================================================================== */
+/* ADDED FOR LAB 4: Helper function for priority boosting                     */
+/* Moves all threads back to highest priority queue (prevents starvation).   */
+/* ========================================================================== */
+static void mlfq_boost_all (void);
+/* ========================================================================== */
+
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -87,11 +110,25 @@ static tid_t allocate_tid (void);
 void
 thread_init (void) 
 {
+  /* ======================================================================== */
+  /* ADDED FOR LAB 4: Loop variable to initialize all 20 MLFQ queues         */
+  /* ======================================================================== */
+  int i;
+  /* ======================================================================== */
+  
   ASSERT (intr_get_level () == INTR_OFF);
 
   lock_init (&tid_lock);
   list_init (&ready_list);
   list_init (&all_list);
+
+  /* ======================================================================== */
+  /* ADDED FOR LAB 4: Initialize all 20 MLFQ priority queues                 */
+  /* Each queue starts empty and will hold threads at that priority level.   */
+  /* ======================================================================== */
+  for (i = 0; i < MLFQ_NUM_QUEUES; i++)
+    list_init (&mlfq_queues[i]);
+  /* ======================================================================== */
 
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
@@ -134,9 +171,45 @@ thread_tick (void)
   else
     kernel_ticks++;
 
-  /* Enforce preemption. */
-  if (++thread_ticks >= TIME_SLICE)
-    intr_yield_on_return ();
+  /* ======================================================================== */
+  /* ADDED FOR LAB 4: MLFQ scheduling logic                                  */
+  /* This runs every tick for threads using MLFQ scheduler.                  */
+  /* ======================================================================== */
+  if (thread_mlfqs && t != idle_thread)
+    {
+      /* Count how many ticks this thread has used at current priority */
+      t->ticks_at_priority++;
+      
+      /* Calculate quantum: higher priority = shorter quantum */
+      /* Priority 19 gets 1 tick, priority 18 gets 2 ticks, etc. */
+      int quantum = (MLFQ_PRIORITY_MAX - t->mlfq_priority) + 1;
+      
+      /* If thread used up its quantum, move it down one priority */
+      if (t->ticks_at_priority >= quantum && t->mlfq_priority > MLFQ_PRIORITY_MIN)
+        {
+          t->mlfq_priority--;           /* Move down one queue */
+          t->ticks_at_priority = 0;     /* Reset tick counter */
+        }
+
+      /* Check if it's time to boost all threads (every 50 ticks) */
+      ticks_since_boost++;
+      if (ticks_since_boost >= MLFQ_BOOST_INTERVAL)
+        {
+          mlfq_boost_all ();            /* Boost everyone to top */
+          ticks_since_boost = 0;        /* Reset boost counter */
+        }
+
+      /* Force a context switch to let highest priority thread run */
+      intr_yield_on_return ();
+    }
+  else
+    {
+      /* ORIGINAL CODE: Non-MLFQ preemption (still works for Lab 3) */
+      /* Enforce preemption. */
+      if (++thread_ticks >= TIME_SLICE)
+        intr_yield_on_return ();
+    }
+  /* ======================================================================== */
 }
 
 /* Prints thread statistics. */
@@ -237,7 +310,18 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  list_push_back (&ready_list, &t->elem);
+  
+  /* ======================================================================== */
+  /* ADDED FOR LAB 4: Choose which queue to add thread to                    */
+  /* If MLFQ is on, add to the priority queue matching thread's priority.    */
+  /* If MLFQ is off, use the original ready_list (for Lab 3 compatibility).  */
+  /* ======================================================================== */
+  if (thread_mlfqs)
+    list_push_back (&mlfq_queues[t->mlfq_priority], &t->mlfq_elem);
+  else
+    list_push_back (&ready_list, &t->elem);
+  /* ======================================================================== */
+    
   t->status = THREAD_READY;
   intr_set_level (old_level);
 }
@@ -307,8 +391,18 @@ thread_yield (void)
   ASSERT (!intr_context ());
 
   old_level = intr_disable ();
-  if (cur != idle_thread) 
-    list_push_back (&ready_list, &cur->elem);
+  if (cur != idle_thread)
+    {
+      /* ==================================================================== */
+      /* ADDED FOR LAB 4: Choose which queue to add thread to                */
+      /* If MLFQ is on, add to the priority queue. Otherwise use ready_list. */
+      /* ==================================================================== */
+      if (thread_mlfqs)
+        list_push_back (&mlfq_queues[cur->mlfq_priority], &cur->mlfq_elem);
+      else
+        list_push_back (&ready_list, &cur->elem);
+      /* ==================================================================== */
+    }
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -335,13 +429,27 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
-  thread_current ()->priority = new_priority;
+  /* ======================================================================== */
+  /* ADDED FOR LAB 4: Don't allow manual priority changes in MLFQ mode       */
+  /* In MLFQ, priority is determined by the scheduler, not by user.          */
+  /* ======================================================================== */
+  if (!thread_mlfqs)
+    thread_current ()->priority = new_priority;
+  /* ======================================================================== */
 }
 
 /* Returns the current thread's priority. */
 int
 thread_get_priority (void) 
 {
+  /* ======================================================================== */
+  /* ADDED FOR LAB 4: Return MLFQ priority if MLFQ is enabled                */
+  /* Otherwise return the regular priority (for Lab 3 compatibility).        */
+  /* ======================================================================== */
+  if (thread_mlfqs)
+    return thread_current ()->mlfq_priority;
+  /* ======================================================================== */
+  
   return thread_current ()->priority;
 }
 
@@ -375,7 +483,7 @@ thread_get_recent_cpu (void)
   /* Not yet implemented. */
   return 0;
 }
-
+
 /* Idle thread.  Executes when no other thread is ready to run.
 
    The idle thread is initially put on the ready list by
@@ -424,7 +532,7 @@ kernel_thread (thread_func *function, void *aux)
   function (aux);       /* Execute the thread function. */
   thread_exit ();       /* If function() returns, kill the thread. */
 }
-
+
 /* Returns the running thread. */
 struct thread *
 running_thread (void) 
@@ -464,6 +572,17 @@ init_thread (struct thread *t, const char *name, int priority)
   t->priority = priority;
   t->magic = THREAD_MAGIC;
 
+  /* ======================================================================== */
+  /* ADDED FOR LAB 4: Initialize MLFQ fields for new thread                  */
+  /* All new threads start at highest priority (queue 19) with no ticks used.*/
+  /* ======================================================================== */
+  if (thread_mlfqs)
+    {
+      t->mlfq_priority = MLFQ_PRIORITY_MAX;    /* Start at top queue */
+      t->ticks_at_priority = 0;                /* Haven't used any time yet */
+    }
+  /* ======================================================================== */
+
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);
   intr_set_level (old_level);
@@ -490,6 +609,29 @@ alloc_frame (struct thread *t, size_t size)
 static struct thread *
 next_thread_to_run (void) 
 {
+  /* ======================================================================== */
+  /* ADDED FOR LAB 4: Use MLFQ scheduler if enabled                          */
+  /* Search from highest priority (19) down to lowest (0) for a ready thread.*/
+  /* ======================================================================== */
+  if (thread_mlfqs)
+    {
+      int i;
+      /* Search each queue from highest to lowest priority */
+      for (i = MLFQ_PRIORITY_MAX; i >= MLFQ_PRIORITY_MIN; i--)
+        {
+          if (!list_empty (&mlfq_queues[i]))
+            {
+              /* Found a thread at this priority - pick first one (round robin) */
+              struct list_elem *e = list_pop_front (&mlfq_queues[i]);
+              return list_entry (e, struct thread, mlfq_elem);
+            }
+        }
+      /* All queues empty, return idle thread */
+      return idle_thread;
+    }
+  /* ======================================================================== */
+  
+  /* from original pintos file */
   if (list_empty (&ready_list))
     return idle_thread;
   else
@@ -578,7 +720,47 @@ allocate_tid (void)
 
   return tid;
 }
-
+
 /* Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof (struct thread, stack);
+
+/* ============================================================================ */
+/* for lab4: Helper function to boost all threads to highest priority   */
+/* This prevents starvation called every 50 ticks to give all threads a      */
+/* fresh start at the top priority queue.                                      */
+/* ============================================================================ */
+static void
+mlfq_boost_all (void)
+{
+  struct list_elem *e;
+  struct thread *t;
+  int i;
+  ASSERT (intr_get_level () == INTR_OFF);
+  /* Moving all threads from lower priority queues to the highest queue */
+  for (i = MLFQ_PRIORITY_MIN; i < MLFQ_PRIORITY_MAX; i++)
+    {
+      while (!list_empty (&mlfq_queues[i]))
+        {
+          /* Took thread from current queue */
+          e = list_pop_front (&mlfq_queues[i]);
+          t = list_entry (e, struct thread, mlfq_elem);
+          
+          /* Boost to highest priority and reset tick counter */
+          t->mlfq_priority = MLFQ_PRIORITY_MAX;
+          t->ticks_at_priority = 0;
+          
+          /* Added to highest priority queue */
+          list_push_back (&mlfq_queues[MLFQ_PRIORITY_MAX], &t->mlfq_elem);
+        }
+    }
+  
+  /* Also boost the currently running thread */
+  t = thread_current ();
+  if (t != idle_thread)
+    {
+      t->mlfq_priority = MLFQ_PRIORITY_MAX;
+      t->ticks_at_priority = 0;
+    }
+}
+/* ============================================================================ */
