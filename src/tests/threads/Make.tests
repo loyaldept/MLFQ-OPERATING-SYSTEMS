@@ -39,6 +39,10 @@ tests/threads_SRC += tests/threads/mlfqs-block.c
 tests/threads_SRC += tests/threads/mlfqs2-fifo.c
 tests/threads_SRC += tests/threads/mlfqs2-longproc.c
 tests/threads_SRC += tests/threads/mlfqs2-shortlong.c
+tests/threads_SRC += tests/threads/mlfqs2-boost.c
+tests/threads_SRC += tests/threads/mlfqs2-priority-order.c
+tests/threads_SRC += tests/threads/mlfqs2-preempt.c
+tests/threads_SRC += tests/threads/mlfqs2-mass.c
 
 MLFQS_OUTPUTS = 				\
 tests/threads/mlfqs-load-1.output		\
