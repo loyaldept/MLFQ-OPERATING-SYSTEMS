@@ -755,12 +755,15 @@ mlfq_boost_all (void)
         }
     }
   
-  /* Also boost the currently running thread */
-  t = thread_current ();
-  if (t != idle_thread)
+  /* ======================================================================== */
+  for (e = list_begin (&all_list); e != list_end (&all_list); e = list_next (e))
     {
-      t->mlfq_priority = MLFQ_PRIORITY_MAX;
-      t->ticks_at_priority = 0;
+      t = list_entry (e, struct thread, allelem);
+      if (t != idle_thread)
+        {
+          t->mlfq_priority = MLFQ_PRIORITY_MAX;
+          t->ticks_at_priority = 0;
+        }
     }
 }
 /* ============================================================================ */
