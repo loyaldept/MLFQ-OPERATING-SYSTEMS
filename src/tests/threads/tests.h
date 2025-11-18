@@ -35,6 +35,10 @@ extern test_func test_mlfqs_block;
 extern test_func test_mlfqs2_fifo;
 extern test_func test_mlfqs2_longproc;
 extern test_func test_mlfqs2_shortlong;
+void test_mlfqs2_boost(void);
+void test_mlfqs2_priority_order(void);
+void test_mlfqs2_preemt(void);
+void test_mlfqs2_mass(void);
 
 void msg (const char *, ...);
 void fail (const char *, ...);
