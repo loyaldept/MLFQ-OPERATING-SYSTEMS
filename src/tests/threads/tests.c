@@ -41,6 +41,10 @@ static const struct test tests[] =
     {"mlfqs2-fifo", test_mlfqs2_fifo},
     {"mlfqs2-longproc", test_mlfqs2_longproc},
     {"mlfqs2-shortlong", test_mlfqs2_shortlong},
+    {"mlfqs2-boost", test_mlfqs2_boost},
+    {"mlfqs2-priority-order", test_mlfqs2_priority_order},
+    {"mlfqs2-preempt", test_mlfqs2_preempt},
+    {"mlfqs2-mass", test_mlfqs2_mass},
   };
 
 static const char *test_name;
